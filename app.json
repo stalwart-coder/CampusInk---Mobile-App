@@ -1,0 +1,66 @@
+{
+  "expo": {
+    "name": "Campus Ink",
+    "slug": "campus-ink",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0a0a0f"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "runtimeVersion": "1.0.0",
+    "updates": {
+      "enabled": true,
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0,
+      "url": "https://u.expo.dev/e0c6cb0f-a587-416c-88d6-049a8e61a841"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.campusink.app"
+    },
+    "android": {
+      "package": "com.campusink.app",
+      "googleServicesFile": "./google-services.json",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#0a0a0f"
+      },
+      "permissions": [
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "CAMERA",
+        "RECORD_AUDIO",
+        "READ_MEDIA_IMAGES",
+        "READ_MEDIA_VIDEO"
+      ]
+    },
+    "plugins": [
+      [
+        "@react-native-google-signin/google-signin",
+        {
+          "iosUrlScheme": "com.googleusercontent.apps.YOUR_IOS_CLIENT_ID"
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Gallery se photos/videos choose karne do",
+          "cameraPermission": "Photos/videos capture karne do"
+        }
+      ],
+      "expo-av",
+      "expo-updates"
+    ],
+    "scheme": "campusink",
+    "extra": {
+      "eas": {
+        "projectId": "e0c6cb0f-a587-416c-88d6-049a8e61a841"
+      }
+    }
+  }
+}

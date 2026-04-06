@@ -1,0 +1,55 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Native builds
+android/
+ios/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Environment variables — NEVER commit these
+.env
+.env.local
+.env.development
+.env.production
+google-services.json
+GoogleService-Info.plist
+
+# Logs
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Build outputs
+build/
+*.apk
+*.aab
+*.ipa
+
+# EAS
+.eas/
+
+# Misc
+*.log
+.cache/

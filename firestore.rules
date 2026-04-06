@@ -1,0 +1,373 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── Helper functions ───────────────────────────────────────────────────
+
+    // Only signed-in, non-anonymous users
+    function isAuth() {
+      return request.auth != null && !request.auth.token.firebase.sign_in_provider.matches('anonymous');
+    }
+
+    // Is the requesting user the owner of the document?
+    function isOwner(uid) {
+      return isAuth() && request.auth.uid == uid;
+    }
+
+    // Is the user an admin?
+    function isAdmin() {
+      return isAuth() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // Is the user an admin or moderator?
+    function isModerator() {
+      return isAuth() && (
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'moderator']
+      );
+    }
+
+    // Is the user a member of this group?
+    function isGroupMember(groupId) {
+      return isAuth() &&
+        exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid));
+    }
+
+    // Is the user the admin/owner of this group?
+    function isGroupAdmin(groupId) {
+      return isAuth() && (
+        get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role in ['admin', 'owner']
+      );
+    }
+
+    // Is the group public?
+    function isPublicGroup(groupId) {
+      return get(/databases/$(database)/documents/groups/$(groupId)).data.isPrivate == false;
+    }
+
+    // Validate post data fields
+    function validPostData() {
+      return request.resource.data.keys().hasAll(['title', 'content', 'authorId', 'createdAt'])
+        && request.resource.data.title is string
+        && request.resource.data.title.size() >= 1
+        && request.resource.data.title.size() <= 300
+        && request.resource.data.authorId == request.auth.uid;
+    }
+
+    // ─── USERS ──────────────────────────────────────────────────────────────
+
+    match /users/{userId} {
+      // Anyone logged in can read user profiles
+      allow read: if isAuth();
+
+      // Only the user can create their own profile
+      allow create: if isOwner(userId)
+        && request.resource.data.keys().hasAll(['uid', 'email', 'displayName'])
+        && request.resource.data.uid == request.auth.uid;
+
+      // Only the user or admin can update
+      allow update: if isOwner(userId) || isAdmin();
+
+      // Only admin can delete accounts
+      allow delete: if isAdmin();
+    }
+
+    // ─── POSTS ──────────────────────────────────────────────────────────────
+
+    match /posts/{postId} {
+      // Anyone logged in can read non-draft posts
+      allow read: if isAuth() && (
+        resource.data.isDraft == false ||
+        resource.data.authorId == request.auth.uid ||
+        isAdmin()
+      );
+
+      // Authenticated users can create posts
+      allow create: if isAuth()
+        && request.resource.data.authorId == request.auth.uid
+        && request.resource.data.title is string
+        && request.resource.data.title.size() >= 1;
+
+      // Only author or admin can update
+      allow update: if (isOwner(resource.data.authorId) || isAdmin())
+        && request.resource.data.authorId == resource.data.authorId; // Can't change author
+
+      // Only author or admin can delete
+      allow delete: if isOwner(resource.data.authorId) || isAdmin();
+    }
+
+    // Post likes subcollection
+    match /posts/{postId}/likes/{userId} {
+      allow read: if isAuth();
+      allow write: if isOwner(userId);
+    }
+
+    // Post comments subcollection
+    match /posts/{postId}/comments/{commentId} {
+      allow read: if isAuth();
+      allow create: if isAuth()
+        && request.resource.data.authorId == request.auth.uid;
+      allow update: if isOwner(resource.data.authorId) || isAdmin();
+      allow delete: if isOwner(resource.data.authorId) || isAdmin();
+    }
+
+    // ─── GROUPS ─────────────────────────────────────────────────────────────
+
+    match /groups/{groupId} {
+      // Public groups: anyone logged in can read
+      // Private groups: only members can read full data
+      allow read: if isAuth() && (
+        !resource.data.isPrivate ||
+        isGroupMember(groupId) ||
+        isAdmin()
+      );
+
+      // Anyone can read basic info of private groups (for discovery)
+      // This is handled by a separate 'groupsPublic' collection — see below
+
+      // Authenticated users can create groups
+      allow create: if isAuth()
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.keys().hasAll(['name', 'createdBy', 'isPrivate']);
+
+      // Group admin or app admin can update
+      allow update: if isGroupAdmin(groupId) || isAdmin();
+
+      // Only app admin can delete groups
+      allow delete: if isAdmin();
+    }
+
+    // Group members subcollection
+    match /groups/{groupId}/members/{userId} {
+      // Members can see who else is in the group
+      allow read: if isAuth() && (
+        isGroupMember(groupId) || isAdmin()
+      );
+
+      // Only group admin or app admin can write (add/remove members)
+      allow write: if isGroupAdmin(groupId) || isAdmin();
+
+      // Users can add themselves to public groups
+      allow create: if isAuth()
+        && userId == request.auth.uid
+        && isPublicGroup(groupId)
+        && request.resource.data.role == 'member';
+
+      // Users can leave (delete their own membership)
+      allow delete: if isOwner(userId);
+    }
+
+    // Group join requests subcollection (for private groups)
+    match /groups/{groupId}/joinRequests/{requestId} {
+      // Only group admins can see requests
+      allow read: if isGroupAdmin(groupId) || isAdmin();
+
+      // Any logged-in user can send a request
+      allow create: if isAuth()
+        && request.resource.data.userId == request.auth.uid;
+
+      // Group admin can approve/reject (update status)
+      allow update: if isGroupAdmin(groupId) || isAdmin();
+
+      // Requester or group admin can cancel/delete
+      allow delete: if isOwner(resource.data.userId) || isGroupAdmin(groupId) || isAdmin();
+    }
+
+    // Group messages/chat subcollection
+    match /groups/{groupId}/messages/{messageId} {
+      // Only members can read messages
+      allow read: if isGroupMember(groupId) || isAdmin();
+
+      // Only members can send messages
+      allow create: if isGroupMember(groupId)
+        && request.resource.data.senderId == request.auth.uid;
+
+      // Only sender or group admin can delete
+      allow delete: if isOwner(resource.data.senderId)
+        || isGroupAdmin(groupId)
+        || isAdmin();
+
+      // No editing messages (privacy/integrity)
+      allow update: if false;
+    }
+
+    // Group posts subcollection (separate from chat)
+    match /groups/{groupId}/posts/{postId} {
+      allow read: if isGroupMember(groupId) || (isPublicGroup(groupId) && isAuth()) || isAdmin();
+      allow create: if isGroupMember(groupId)
+        && request.resource.data.authorId == request.auth.uid;
+      allow update: if isOwner(resource.data.authorId) || isGroupAdmin(groupId) || isAdmin();
+      allow delete: if isOwner(resource.data.authorId) || isGroupAdmin(groupId) || isAdmin();
+    }
+
+    // ─── EVENTS ─────────────────────────────────────────────────────────────
+
+    match /events/{eventId} {
+      allow read: if isAuth();
+      allow create: if isAuth() && request.resource.data.createdBy == request.auth.uid;
+      allow update: if isOwner(resource.data.createdBy) || isAdmin();
+      allow delete: if isOwner(resource.data.createdBy) || isAdmin();
+    }
+
+    // Event RSVPs subcollection
+    match /events/{eventId}/rsvps/{userId} {
+      allow read: if isAuth();
+      allow write: if isOwner(userId);
+    }
+
+    // ─── NOTIFICATIONS ───────────────────────────────────────────────────────
+
+    match /notifications/{notifId} {
+      // Users can only read their own notifications
+      allow read: if isOwner(resource.data.userId);
+
+      // System/cloud functions create notifications (or admins)
+      allow create: if isAdmin();
+
+      // Users can mark their own notifications as read
+      allow update: if isOwner(resource.data.userId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read', 'readAt']);
+
+      // Users can delete their own notifications
+      allow delete: if isOwner(resource.data.userId) || isAdmin();
+    }
+
+    // ─── REELS / SHORT VIDEOS ────────────────────────────────────────────────
+
+    match /reels/{reelId} {
+      allow read: if isAuth();
+      allow create: if isAuth() && request.resource.data.authorId == request.auth.uid;
+      allow update: if isOwner(resource.data.authorId) || isAdmin();
+      allow delete: if isOwner(resource.data.authorId) || isAdmin();
+    }
+
+    match /reels/{reelId}/likes/{userId} {
+      allow read: if isAuth();
+      allow write: if isOwner(userId);
+    }
+
+    match /reels/{reelId}/comments/{commentId} {
+      allow read: if isAuth();
+      allow create: if isAuth() && request.resource.data.authorId == request.auth.uid;
+      allow delete: if isOwner(resource.data.authorId) || isAdmin();
+      allow update: if false;
+    }
+
+    // ─── STORIES / STATUS ───────────────────────────────────────────────────
+
+    match /stories/{storyId} {
+      // Anyone can read active (non-expired) stories
+      allow read: if isAuth() && (
+        resource.data.expiresAt > request.time ||
+        isOwner(resource.data.authorId) ||
+        isAdmin()
+      );
+      allow create: if isAuth() && request.resource.data.authorId == request.auth.uid;
+      allow delete: if isOwner(resource.data.authorId) || isAdmin();
+      allow update: if false; // Stories don't get edited
+    }
+
+    // Story views
+    match /stories/{storyId}/views/{userId} {
+      allow read: if isOwner(userId)
+        || get(/databases/$(database)/documents/stories/$(storyId)).data.authorId == request.auth.uid;
+      allow create: if isOwner(userId);
+      allow update, delete: if false;
+    }
+
+    // ─── ADVERTISEMENTS ─────────────────────────────────────────────────────
+
+    match /ads/{adId} {
+      // Active ads are readable by all logged-in users
+      allow read: if isAuth() && (
+        resource.data.status == 'active' ||
+        isAdmin()
+      );
+      // Only admin can create/update/delete ads
+      allow write: if isAdmin();
+    }
+
+    // Ad clicks tracking
+    match /ads/{adId}/clicks/{clickId} {
+      allow read: if isAdmin();
+      allow create: if isAuth() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // ─── BOOST REQUESTS ─────────────────────────────────────────────────────
+
+    match /boostRequests/{requestId} {
+      allow read: if isOwner(resource.data.userId) || isAdmin();
+      allow create: if isAuth() && request.resource.data.userId == request.auth.uid;
+      allow update: if isAdmin();
+      allow delete: if isOwner(resource.data.userId) || isAdmin();
+    }
+
+    // ─── SAVED POSTS (user-specific) ─────────────────────────────────────────
+
+    match /savedPosts/{userId}/posts/{postId} {
+      allow read, write: if isOwner(userId);
+    }
+
+    // ─── FOLLOW SYSTEM ───────────────────────────────────────────────────────
+
+    // Followers: users/{userId}/followers/{followerId}
+    match /users/{userId}/followers/{followerId} {
+      allow read: if isAuth();
+      allow create: if isOwner(followerId); // You follow someone
+      allow delete: if isOwner(followerId); // You unfollow
+      allow update: if false;
+    }
+
+    // Following: users/{userId}/following/{targetId}
+    match /users/{userId}/following/{targetId} {
+      allow read: if isAuth();
+      allow create: if isOwner(userId);
+      allow delete: if isOwner(userId);
+      allow update: if false;
+    }
+
+    // ─── ANALYTICS (admin only) ──────────────────────────────────────────────
+
+    match /analytics/{docId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+
+    // ─── LEADERBOARD ─────────────────────────────────────────────────────────
+
+    match /leaderboard/{userId} {
+      allow read: if isAuth();
+      // Only cloud functions or admin update leaderboard
+      allow write: if isAdmin();
+    }
+
+    // ─── APP CONFIG (public read, admin write) ───────────────────────────────
+
+    match /config/{docId} {
+      allow read: if isAuth();
+      allow write: if isAdmin();
+    }
+
+    // ─── SEARCH INDEX ────────────────────────────────────────────────────────
+
+    match /searchIndex/{docId} {
+      allow read: if isAuth();
+      allow write: if isAdmin();
+    }
+
+    // ─── REPORTS / CONTENT MODERATION ───────────────────────────────────────
+
+    match /reports/{reportId} {
+      allow read: if isModerator();
+      allow create: if isAuth()
+        && request.resource.data.reportedBy == request.auth.uid;
+      allow update: if isModerator();
+      allow delete: if isAdmin();
+    }
+
+    // ─── DENY ALL ELSE ───────────────────────────────────────────────────────
+    // Implicit deny for anything not matched above
+  }
+}
